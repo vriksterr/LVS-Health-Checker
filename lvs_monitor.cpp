@@ -3,167 +3,169 @@
 #include <vector>
 #include <map>
 #include <deque>
-#include <thread>
 #include <chrono>
-#include <mutex>
-#include <sstream>
 #include <cstdlib>
 #include <regex>
+#include <sstream>
+#include <set>
+#include <thread>
 
 using namespace std;
 using namespace std::chrono;
 
 // ---------------- CONFIG ----------------
 vector<string> BACKEND_SERVERS = {"10.1.2.2", "10.1.2.3"};
-string LVS_VIRTUAL_IP = "<ip_of_eth_interface>";
+//This is the ip it is listening on.
+string LVS_VIRTUAL_IP = "<eth0_ip_address>";
 
 vector<int> TCP_SERVICES = {80, 443, 445, 446, 2232, 55665};
 vector<int> UDP_SERVICES = {442, 55665};
 
 int LOSS_THRESHOLD = 5;      // %
 int WINDOW_SECONDS = 60;     // sliding window size
-int PING_COUNT = 1;
 int PING_TIMEOUT = 1;
 
 // ---------------- GLOBALS ----------------
 map<string, deque<int>> loss_history;
 map<string, string> server_status;
-mutex mtx;
+set<string> created_services;
 
-// ---------------- HELPERS ----------------
-int ping_server(const string& server) {
-    string cmd = "ping -c " + to_string(PING_COUNT) + 
-                 " -W " + to_string(PING_TIMEOUT) + 
-                 " " + server;
+// ---------------------------------------------------------
+int ping_server(const std::string &ip) {
+    std::string cmd =
+        "timeout " + to_string(PING_TIMEOUT) +
+        " ping -c 1 -W 1 " + ip + " 2>&1";
 
-    FILE* pipe = popen(cmd.c_str(), "r");
+    FILE *pipe = popen(cmd.c_str(), "r");
     if (!pipe) return 100;
 
-    string result;
-    char buffer[128];
+    char buffer[256];
+    std::string output;
     while (fgets(buffer, sizeof(buffer), pipe))
-        result += buffer;
+        output += buffer;
+
     pclose(pipe);
 
-    regex loss_regex("(\\d+)% packet loss");
-    smatch match;
-    if (regex_search(result, match, loss_regex))
-        return stoi(match[1]);
+    std::regex loss_regex(R"((\d+(\.\d+)?)%\s*packet loss)");
+    std::smatch match;
 
-    return 100;
+    if (std::regex_search(output, match, loss_regex)) {
+        float loss = 100.0f;
+        std::stringstream ss(match[1].str());
+        ss >> loss;
+        return static_cast<int>(loss);
+    }
+
+    return 100; // treat as DOWN if parsing fails
 }
 
-int average_loss(const deque<int>& history) {
-    if (history.empty()) return 0;
+// ---------------------------------------------------------
+int average_loss(const deque<int>& h) {
+    if (h.empty()) return 0;
     int sum = 0;
-    for (int v : history) sum += v;
-    return sum / history.size();
+    for (int x : h) sum += x;
+    return sum / h.size();
 }
 
+// ---------------------------------------------------------
 void create_service_if_needed(char type, int port) {
-    string cmd_check = "ipvsadm -l | grep -q \"" + 
-                       LVS_VIRTUAL_IP + ":" + to_string(port) + "\"";
+    string proto = (type == 't') ? "TCP" : "UDP";
+    string key = proto + ":" + to_string(port);
 
-    if (system(cmd_check.c_str()) != 0) {
+    if (created_services.count(key)) return;
+
+    string check_cmd =
+        "ipvsadm -Ln | grep -q \"^" + proto + " " + LVS_VIRTUAL_IP + ":" + to_string(port) + "\"";
+
+    if (system(check_cmd.c_str()) != 0) {
         string cmd_add =
             "ipvsadm -A -" + string(1, type) + " " +
             LVS_VIRTUAL_IP + ":" + to_string(port) + " -s rr";
 
-        system(cmd_add.c_str());
-        cout << "[INFO] Created "
-             << (type == 't' ? "TCP" : "UDP") << " "
-             << LVS_VIRTUAL_IP << ":" << port << endl;
+        (void)system(cmd_add.c_str());
+        cout << "[INFO] Created " << proto << " " << LVS_VIRTUAL_IP << ":" << port << endl;
+        created_services.insert(key);
     }
 }
 
-void add_server_to_lvs(const string& server_ip) {
+// ---------------------------------------------------------
+void add_server_to_lvs(const string& ip) {
     for (int port : TCP_SERVICES) {
         create_service_if_needed('t', port);
         string cmd =
             "ipvsadm -a -t " + LVS_VIRTUAL_IP + ":" + to_string(port) +
-            " -r " + server_ip + ":" + to_string(port) + " -m 2>/dev/null";
-        system(cmd.c_str());
+            " -r " + ip + ":" + to_string(port) + " -m 2>/dev/null";
+        (void)system(cmd.c_str());
     }
 
     for (int port : UDP_SERVICES) {
         create_service_if_needed('u', port);
         string cmd =
             "ipvsadm -a -u " + LVS_VIRTUAL_IP + ":" + to_string(port) +
-            " -r " + server_ip + ":" + to_string(port) + " -m 2>/dev/null";
-        system(cmd.c_str());
+            " -r " + ip + ":" + to_string(port) + " -m 2>/dev/null";
+        (void)system(cmd.c_str());
     }
 
-    cout << "[INFO] Added " << server_ip << " back to LVS" << endl;
+    cout << "[INFO] Added " << ip << " back to LVS" << endl;
 }
 
-void remove_server_from_lvs(const string& server_ip) {
+// ---------------------------------------------------------
+void remove_server_from_lvs(const string& ip) {
     for (int port : TCP_SERVICES) {
         string cmd =
             "ipvsadm -d -t " + LVS_VIRTUAL_IP + ":" + to_string(port) +
-            " -r " + server_ip + ":" + to_string(port) + " 2>/dev/null";
-        system(cmd.c_str());
+            " -r " + ip + ":" + to_string(port) + " 2>/dev/null";
+        (void)system(cmd.c_str());
     }
 
     for (int port : UDP_SERVICES) {
         string cmd =
             "ipvsadm -d -u " + LVS_VIRTUAL_IP + ":" + to_string(port) +
-            " -r " + server_ip + ":" + to_string(port) + " 2>/dev/null";
-        system(cmd.c_str());
+            " -r " + ip + ":" + to_string(port) + " 2>/dev/null";
+        (void)system(cmd.c_str());
     }
 
-    cout << "[WARN] Removed " << server_ip << " from LVS" << endl;
+    cout << "[WARN] Removed " << ip << " from LVS" << endl;
 }
 
-// ---------------- HEALTH CHECK THREAD ----------------
-void monitor_server(const string& server) {
+// ---------------------------------------------------------
+int main() {
+    cout << "[START] LVS Health Monitor (Single Loop Version)\n";
+    cout << "------------------------------------------------\n";
+
+    // Initialize server states
+    for (const auto& s : BACKEND_SERVERS)
+        server_status[s] = "UNKNOWN";
+
     while (true) {
+        auto loop_start = steady_clock::now();
 
-        // -------- PARALLEL PART (NO LOCK) --------
-        int loss = ping_server(server);
+        for (const auto& server : BACKEND_SERVERS) {
+            int loss = ping_server(server);
 
-        // -------- CRITICAL SECTION --------
-        {
-            lock_guard<mutex> lock(mtx);
+            auto &h = loss_history[server];
+            h.push_back(loss);
+            if (h.size() > WINDOW_SECONDS) h.pop_front();
 
-            auto& history = loss_history[server];
-            history.push_back(loss);
-            if (history.size() > WINDOW_SECONDS)
-                history.pop_front();
-
-            int avg_loss = average_loss(history);
+            int avg = average_loss(h);
 
             cout << "[CHECK] " << server
-                 << " | Latest=" << loss << "%"
-                 << " | Avg(60s)=" << avg_loss << "%" << endl;
+                 << " | Latest=" << loss << "% | Avg(" << WINDOW_SECONDS << "s)=" << avg << "%\n";
 
-            // State transitions
-            if (avg_loss >= LOSS_THRESHOLD && server_status[server] != "DOWN") {
+            if (avg >= LOSS_THRESHOLD && server_status[server] != "DOWN") {
                 remove_server_from_lvs(server);
                 server_status[server] = "DOWN";
-            } else if (avg_loss < LOSS_THRESHOLD && server_status[server] != "UP") {
+            } else if (avg < LOSS_THRESHOLD && server_status[server] != "UP") {
                 add_server_to_lvs(server);
                 server_status[server] = "UP";
             }
         }
 
-        this_thread::sleep_for(1s);
+        // Keep 1-second interval
+        auto loop_end = steady_clock::now();
+        auto elapsed = duration_cast<milliseconds>(loop_end - loop_start).count();
+        if (elapsed < 1000) this_thread::sleep_for(milliseconds(1000 - elapsed));
     }
-}
-
-// ---------------- MAIN ----------------
-int main() {
-    cout << "[START] LVS Health Monitor (Parallel Ping + Sliding Window)" << endl;
-    cout << "-------------------------------------------------------------" << endl;
-
-    for (const auto& server : BACKEND_SERVERS)
-        server_status[server] = "UNKNOWN";
-
-    vector<thread> threads;
-    for (const auto& server : BACKEND_SERVERS)
-        threads.emplace_back(monitor_server, server);
-
-    for (auto& t : threads)
-        t.join();
 
     return 0;
 }
