@@ -15,13 +15,13 @@ using namespace std::chrono;
 
 // ---------------- CONFIG ----------------
 vector<string> BACKEND_SERVERS = {"10.1.2.2", "10.1.2.3"};
-string LVS_VIRTUAL_IP = "<ip_of_eth_interface";
+string LVS_VIRTUAL_IP = "<ip_of_eth_interface>";
 
 vector<int> TCP_SERVICES = {80, 443, 445, 446, 2232, 55665};
 vector<int> UDP_SERVICES = {442, 55665};
 
-int LOSS_THRESHOLD = 5;      // %
-int WINDOW_SECONDS = 60;     // sliding window size
+int LOSS_THRESHOLD = 5;      // % of packetloss beyond which the
+int WINDOW_SECONDS = 60;     // sliding window size in seconds you want to monitor
 int PING_COUNT = 1;          // pings per check
 int PING_TIMEOUT = 1;        // seconds
 
