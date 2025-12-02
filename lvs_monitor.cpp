@@ -14,21 +14,48 @@ using namespace std;
 using namespace std::chrono;
 
 // ---------------- CONFIG ----------------
-vector<string> BACKEND_SERVERS = {"10.1.2.2", "10.1.2.3"};
-//This is the ip it is listening on.
+// BACKEND NODES
+vector<string> BACKEND_SERVERS = {"10.1.1.2", "10.1.1.3"};
+
+// Virtual IP that LVS listens on
 string LVS_VIRTUAL_IP = "<eth0_ip_address>";
 
-vector<int> TCP_SERVICES = {80, 443, 445, 446, 2232, 55665};
-vector<int> UDP_SERVICES = {442, 55665};
+// Port list now supports single ports ("80") AND ranges ("11000-12000")
+vector<string> TCP_SERVICES = {"80", "443", "445", "446", "5201", "55665", "11000-12000"};
+vector<string> UDP_SERVICES = {"442", "55665", "11000-12000"};
 
-int LOSS_THRESHOLD = 5;      // %
-int WINDOW_SECONDS = 60;     // sliding window size
-int PING_TIMEOUT = 1;
+int LOSS_THRESHOLD = 5;      // % above which the gateway will be droppedd
+int WINDOW_SECONDS = 60;     // sliding window size the seconds it will consider to see the % of packet loss
+int PING_TIMEOUT = 1;        // seconds a ping timeout is considered
 
 // ---------------- GLOBALS ----------------
 map<string, deque<int>> loss_history;
 map<string, string> server_status;
 set<string> created_services;
+
+// ---------------------------------------------------------
+// EXPAND PORT RANGES: "11000-12000" → [11000,11001...12000]
+vector<int> expand_ports(const vector<string>& ports_raw) {
+    vector<int> expanded;
+
+    for (const auto& p : ports_raw) {
+        if (p.find('-') != string::npos) {
+            int start, end;
+            char dash;
+            stringstream ss(p);
+            ss >> start >> dash >> end;
+
+            if (start <= end) {
+                for (int i = start; i <= end; i++)
+                    expanded.push_back(i);
+            }
+        } else {
+            expanded.push_back(stoi(p));
+        }
+    }
+
+    return expanded;
+}
 
 // ---------------------------------------------------------
 int ping_server(const std::string &ip) {
@@ -90,7 +117,10 @@ void create_service_if_needed(char type, int port) {
 
 // ---------------------------------------------------------
 void add_server_to_lvs(const string& ip) {
-    for (int port : TCP_SERVICES) {
+    vector<int> tcp_ports = expand_ports(TCP_SERVICES);
+    vector<int> udp_ports = expand_ports(UDP_SERVICES);
+
+    for (int port : tcp_ports) {
         create_service_if_needed('t', port);
         string cmd =
             "ipvsadm -a -t " + LVS_VIRTUAL_IP + ":" + to_string(port) +
@@ -98,7 +128,7 @@ void add_server_to_lvs(const string& ip) {
         (void)system(cmd.c_str());
     }
 
-    for (int port : UDP_SERVICES) {
+    for (int port : udp_ports) {
         create_service_if_needed('u', port);
         string cmd =
             "ipvsadm -a -u " + LVS_VIRTUAL_IP + ":" + to_string(port) +
@@ -111,14 +141,17 @@ void add_server_to_lvs(const string& ip) {
 
 // ---------------------------------------------------------
 void remove_server_from_lvs(const string& ip) {
-    for (int port : TCP_SERVICES) {
+    vector<int> tcp_ports = expand_ports(TCP_SERVICES);
+    vector<int> udp_ports = expand_ports(UDP_SERVICES);
+
+    for (int port : tcp_ports) {
         string cmd =
             "ipvsadm -d -t " + LVS_VIRTUAL_IP + ":" + to_string(port) +
             " -r " + ip + ":" + to_string(port) + " 2>/dev/null";
         (void)system(cmd.c_str());
     }
 
-    for (int port : UDP_SERVICES) {
+    for (int port : udp_ports) {
         string cmd =
             "ipvsadm -d -u " + LVS_VIRTUAL_IP + ":" + to_string(port) +
             " -r " + ip + ":" + to_string(port) + " 2>/dev/null";
