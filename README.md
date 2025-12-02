@@ -141,7 +141,10 @@ cd LVS-Health-Checker
 ```bash
 g++ -std=c++17 -pthread lvs_monitor.cpp -o lvs_monitor
 ```
-
+Or use this final command
+```bash
+g++ -std=c++17 -O3 -funroll-loops -fno-rtti -fno-exceptions -s -fvisibility=hidden -pthread lvs_monitor.cpp -o lvs_monitor
+```
 3. Run it
    Root privileges are required because `ipvsadm` modifies kernel LVS tables:
 
