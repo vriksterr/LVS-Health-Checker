@@ -21,8 +21,8 @@ vector<string> BACKEND_SERVERS = {"10.1.1.2", "10.1.1.3"};
 string LVS_VIRTUAL_IP = "<eth0_ip_address>";
 
 // Port list now supports single ports ("80") AND ranges ("11000-12000")
-vector<string> TCP_SERVICES = {"80", "443", "445", "446", "5201", "55665", "11000-12000"};
-vector<string> UDP_SERVICES = {"442", "55665", "11000-12000"};
+vector<string> TCP_SERVICES = {"80", "443", "445", "446", "5201", "55665", "110", "143", "465", "587", "993", "995", "4190"};
+vector<string> UDP_SERVICES = {"442", "55665"};
 
 int LOSS_THRESHOLD = 5;      // % above which the gateway will be droppedd
 int WINDOW_SECONDS = 60;     // sliding window size the seconds it will consider to see the % of packet loss
